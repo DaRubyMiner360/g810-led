@@ -164,7 +164,7 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 
 		while (dev) {
 			for (int i=0; i<(int)SupportedKeyboards.size(); i++) {
-				if (dev->vendor_id == SupportedKeyboards[i][0] && dev->product_id == SupportedKeyboards[i][1]) {
+				if (dev->vendor_id == SupportedKeyboards[i][0] && dev->product_id == SupportedKeyboards[i][1] && dev->interface_number == SupportedKeyboards[i][2]) {
 					if (!serial.empty() && dev->serial_number != NULL && wideSerial.compare(dev->serial_number) != 0) break; //Serial didn't match
 
 					if (dev->serial_number != NULL) {
@@ -189,7 +189,8 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 
 					currentDevice.vendorID = dev->vendor_id;
 					currentDevice.productID = dev->product_id;
-					currentDevice.model = (KeyboardModel)SupportedKeyboards[i][2];
+					currentDevice.path = dev->path;
+					currentDevice.model = (KeyboardModel)SupportedKeyboards[i][3];
 					break;
 				}
 			}
@@ -207,8 +208,7 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 			return false;
 		}
 
-		if (wideSerial.empty()) m_hidHandle = hid_open(currentDevice.vendorID, currentDevice.productID, NULL);
-		else m_hidHandle = hid_open(currentDevice.vendorID, currentDevice.productID, wideSerial.c_str());
+		m_hidHandle = hid_open_path(currentDevice.path.c_str());
 
 		if(m_hidHandle == 0) {
 			hid_exit();
@@ -252,7 +252,7 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 									currentDevice.serialNumber = serial;
 									currentDevice.vendorID = desc.idVendor;
 									currentDevice.productID = desc.idProduct;
-									currentDevice.model = (KeyboardModel)SupportedKeyboards[i][2];
+									currentDevice.model = (KeyboardModel)SupportedKeyboards[i][3];
 
 									dev = device;
 									libusb_close(m_hidHandle);
@@ -280,7 +280,7 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 							}
 							currentDevice.vendorID = desc.idVendor;
 							currentDevice.productID = desc.idProduct;
-							currentDevice.model = (KeyboardModel)SupportedKeyboards[i][2];
+							currentDevice.model = (KeyboardModel)SupportedKeyboards[i][3];
 							if (libusb_get_string_descriptor_ascii(m_hidHandle, desc.iManufacturer, buf, 256) >= 1) currentDevice.manufacturer = string((char*)buf);
 							if (libusb_get_string_descriptor_ascii(m_hidHandle, desc.iProduct, buf, 256) >= 1) currentDevice.product = string((char*)buf);
 							if (libusb_get_string_descriptor_ascii(m_hidHandle, desc.iSerialNumber, buf, 256) >= 1) currentDevice.serialNumber = string((char*)buf);
@@ -312,9 +312,18 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 			m_ctx = NULL;
 			return false;
 		}
-			
-		if(libusb_kernel_driver_active(m_hidHandle, 1) == 1) {
-			if(libusb_detach_kernel_driver(m_hidHandle, 1) != 0) {
+
+		int interface_num;
+		switch (currentDevice.model) {
+			case KeyboardModel::g915:
+				interface_num = 2;
+				break;
+			default:
+				interface_num = 1;
+		}
+
+		if(libusb_kernel_driver_active(m_hidHandle, interface_num) == 1) {
+			if(libusb_detach_kernel_driver(m_hidHandle, interface_num) != 0) {
 				libusb_exit(m_ctx);
 				errno = EACCES;
 				m_ctx = NULL;
@@ -323,9 +332,9 @@ bool LedKeyboard::open(uint16_t vendorID, uint16_t productID, string serial) {
 			m_isKernellDetached = true;
 		}
 			
-		if(libusb_claim_interface(m_hidHandle, 1) < 0) {
+		if(libusb_claim_interface(m_hidHandle, interface_num) < 0) {
 			if(m_isKernellDetached==true) {
-				libusb_attach_kernel_driver(m_hidHandle, 1);
+				libusb_attach_kernel_driver(m_hidHandle, interface_num);
 				m_isKernellDetached = false;
 			}
 			libusb_exit(m_ctx);
@@ -396,6 +405,9 @@ bool LedKeyboard::commit() {
 		case KeyboardModel::g910:
 			data = { 0x11, 0xff, 0x0f, 0x5d };
 			break;
+		case KeyboardModel::g915:
+			data = { 0x11, 0x01, 0x0b, 0x7f };
+			break;
 		default:
 			return false;
 	}
@@ -419,6 +431,18 @@ bool LedKeyboard::setKeys(KeyValueArray keyValues) {
 	
 	switch (currentDevice.model) {
 		case KeyboardModel::g815:
+		case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x0b;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x10;
+			}
 			for (uint8_t i = 0; i < keyValues.size(); i++) {
 				uint32_t colorkey = static_cast<uint32_t>(keyValues[i].color.red | keyValues[i].color.green << 8 | keyValues[i].color.blue << 16 );
 				if (KeyByColors.count(colorkey) == 0) KeyByColors.insert(pair<uint32_t, vector<KeyValue>>(colorkey, {}));
@@ -430,7 +454,7 @@ bool LedKeyboard::setKeys(KeyValueArray keyValues) {
 					uint8_t gi = 0;
 					while (gi < x.second.size()) {
 						size_t data_size = 20;
-						byte_buffer_t data = { 0x11, 0xff, 0x10, 0x6c };
+						byte_buffer_t data = { 0x11, g815_target, g815_feat_idx, 0x6c };
 						data.push_back(x.second[0].color.red);
 						data.push_back(x.second[0].color.green);
 						data.push_back(x.second[0].color.blue);
@@ -724,10 +748,22 @@ bool LedKeyboard::setMRKey(uint8_t value) {
 	LedKeyboard::byte_buffer_t data;
 	switch (currentDevice.model) {
 		case KeyboardModel::g815:
+		case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x13;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x0c;
+			}
 			switch (value) {
 				case 0x00:
 				case 0x01:
-					data = { 0x11, 0xff, 0x0c, 0x0c, value };
+					data = { 0x11, g815_target, g815_feat_idx, 0x0c, value };
 					data.resize(20, 0x00);
 					return sendDataInternal(data);
 				default:
@@ -755,17 +791,29 @@ bool LedKeyboard::setMNKey(uint8_t value) {
 	LedKeyboard::byte_buffer_t data;
 	switch (currentDevice.model) {
 		case KeyboardModel::g815:
+		case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x12;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x0b;
+			}
 			switch (value) {
 				case 0x01:
-                    data = { 0x11, 0xff, 0x0b, 0x1c, 0x01 };
+                    data = { 0x11, g815_target, g815_feat_idx, 0x1c, 0x01 };
                     data.resize(20, 0x00);
                     return sendDataInternal(data);
                 case 0x02:
-                    data = { 0x11, 0xff, 0x0b, 0x1c, 0x02 };
+                    data = { 0x11, g815_target, g815_feat_idx, 0x1c, 0x02 };
                     data.resize(20, 0x00);
                     return sendDataInternal(data);
                 case 0x03:
-                    data = { 0x11, 0xff, 0x0b, 0x1c, 0x04 };
+                    data = { 0x11, g815_target, g815_feat_idx, 0x1c, 0x04 };
                     data.resize(20, 0x00);
                     return sendDataInternal(data);
 				default:
@@ -799,10 +847,22 @@ bool LedKeyboard::setGKeysMode(uint8_t value) {
 	LedKeyboard::byte_buffer_t data;
 	switch (currentDevice.model) {
 		case KeyboardModel::g815:
+		case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x11;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x0a;
+			}
 			switch (value) {
 				case 0x00:
 				case 0x01:
-					data = { 0x11, 0xff, 0x0a, 0x2b, value };
+					data = { 0x11, g815_target, g815_feat_idx, 0x2b, value };
 					data.resize(20, 0x00);
 					return sendDataInternal(data);
 				default:
@@ -866,7 +926,19 @@ bool LedKeyboard::setOnBoardMode(OnBoardMode onBoardMode) {
 	byte_buffer_t data;
 	switch (currentDevice.model) {
 		case KeyboardModel::g815:
-			data = { 0x11, 0xff, 0x11, 0x1a, static_cast<uint8_t>(onBoardMode) };
+		case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x15;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x11;
+			}
+			data = { 0x11, g815_target, g815_feat_idx, 0x1a, static_cast<uint8_t>(onBoardMode) };
 			data.resize(20, 0x00);
 			return sendDataInternal(data);
 		default:
@@ -908,6 +980,8 @@ bool LedKeyboard::setNativeEffect(NativeEffect effect, NativeEffectPart part,
 			setNativeEffect(effect, LedKeyboard::NativeEffectPart::logo, period, color, storage));
 	}
 
+	unsigned char target = 0xff;
+
 	switch (currentDevice.model) {
 		case KeyboardModel::g213:
 		case KeyboardModel::g413:
@@ -923,10 +997,16 @@ bool LedKeyboard::setNativeEffect(NativeEffect effect, NativeEffectPart part,
 		case KeyboardModel::gpro:
 			protocolBytes[0] = 0x0d;
 			protocolBytes[1] = 0x3c;
-			break;
+			break
+				break;;
 		case KeyboardModel::g815:
 			protocolBytes[0] = 0x0f;
 			protocolBytes[1] = 0x1c;
+			break;
+		case KeyboardModel::g915:
+			protocolBytes[0] = 0x0a;
+			protocolBytes[1] = 0x1c;
+			target = 0x01;
 			break;
 		case KeyboardModel::g910:
 			protocolBytes[0] = 0x10;
@@ -937,7 +1017,7 @@ bool LedKeyboard::setNativeEffect(NativeEffect effect, NativeEffectPart part,
 	}
 
 	byte_buffer_t data = {
-		0x11, 0xff, protocolBytes[0], protocolBytes[1],
+		0x11, target, protocolBytes[0], protocolBytes[1],
 		(uint8_t)part, static_cast<uint8_t>(effectGroup),
 		// color of static-color and breathing effects
 		color.red, color.green, color.blue,
@@ -959,7 +1039,19 @@ bool LedKeyboard::setNativeEffect(NativeEffect effect, NativeEffectPart part,
 	bool retval;
 	switch (currentDevice.model) {
 		case KeyboardModel::g815:
-			setupData = { 0x11, 0xff, 0x0f, 0x5c, 0x01, 0x03, 0x03 };
+		case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x0a;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x0f;
+			}
+			setupData = { 0x11, g815_target, g815_feat_idx, 0x5c, 0x01, 0x03, 0x03 };
 			setupData.resize(20, 0x00);
 			retval = sendDataInternal(setupData);
 
@@ -1038,20 +1130,32 @@ bool LedKeyboard::sendDataInternal(byte_buffer_t &data) {
 			*/
 			return true;
 		#elif defined(libusb)
+			int interface_num;
+			int interrupt_endpoint;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					interface_num = 2;
+					interrupt_endpoint = 0x83;
+					break;
+				default:
+					interface_num = 1;
+					interrupt_endpoint = 0x82;
+			}
+
 			if (! m_isOpen) return false;
 			if (data.size() > 20) {
-				if(libusb_control_transfer(m_hidHandle, 0x21, 0x09, 0x0212, 1, 
+				if(libusb_control_transfer(m_hidHandle, 0x21, 0x09, 0x0212, interface_num, 
 						const_cast<unsigned char*>(data.data()), data.size(), 2000) < 0)
 					return false;
 			} else {
-				if(libusb_control_transfer(m_hidHandle, 0x21, 0x09, 0x0211, 1, 
+				if(libusb_control_transfer(m_hidHandle, 0x21, 0x09, 0x0211, interface_num, 
 						const_cast<unsigned char*>(data.data()), data.size(), 2000) < 0)
 					return false;
 			}
 			usleep(1000);
 			unsigned char buffer[64];
 			int len = 0;
-			libusb_interrupt_transfer(m_hidHandle, 0x82, buffer, sizeof(buffer), &len, 1);
+			libusb_interrupt_transfer(m_hidHandle, interrupt_endpoint, buffer, sizeof(buffer), &len, 1);
 			return true;
 		#endif
 	}
@@ -1097,17 +1201,29 @@ LedKeyboard::byte_buffer_t LedKeyboard::getKeyGroupAddress(LedKeyboard::KeyAddre
 			}
 			break;
 		case KeyboardModel::g815:
+			case KeyboardModel::g915:
+			unsigned char g815_target;
+			unsigned char g815_feat_idx;
+			switch (currentDevice.model) {
+				case KeyboardModel::g915:
+					g815_target = 0x01;
+					g815_feat_idx = 0x0b;
+					break;
+				default:
+					g815_target = 0xff;
+					g815_feat_idx = 0x10;
+			}
 			switch (keyAddressGroup) {
 				case LedKeyboard::KeyAddressGroup::logo:
-					return { 0x11, 0xff, 0x10, 0x1c };
+					return { 0x11, g815_target, g815_feat_idx, 0x1c };
 				case LedKeyboard::KeyAddressGroup::indicators:
-					return { 0x11, 0xff, 0x10, 0x1c };
+					return { 0x11, g815_target, g815_feat_idx, 0x1c };
 				case LedKeyboard::KeyAddressGroup::gkeys:
-					return { 0x11, 0xff, 0x10, 0x1c };
+					return { 0x11, g815_target, g815_feat_idx, 0x1c };
 				case LedKeyboard::KeyAddressGroup::multimedia:
-					return { 0x11, 0xff, 0x10, 0x1c };
+					return { 0x11, g815_target, g815_feat_idx, 0x1c };
 				case LedKeyboard::KeyAddressGroup::keys:
-					return { 0x11, 0xff, 0x10, 0x1c };
+					return { 0x11, g815_target, g815_feat_idx, 0x1c };
 			}
 			break;
 		case KeyboardModel::g910:
