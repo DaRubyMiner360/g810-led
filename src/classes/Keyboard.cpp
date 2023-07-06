@@ -997,8 +997,7 @@ bool LedKeyboard::setNativeEffect(NativeEffect effect, NativeEffectPart part,
 		case KeyboardModel::gpro:
 			protocolBytes[0] = 0x0d;
 			protocolBytes[1] = 0x3c;
-			break
-				break;;
+			break;
 		case KeyboardModel::g815:
 			protocolBytes[0] = 0x0f;
 			protocolBytes[1] = 0x1c;
